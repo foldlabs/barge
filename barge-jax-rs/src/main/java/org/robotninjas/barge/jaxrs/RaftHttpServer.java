@@ -62,24 +62,27 @@ public class RaftHttpServer {
   private static final Logger logger = LoggerFactory.getLogger(RaftHttpServer.class);
 
   private static final String help = "Usage: java -jar barge.jar [options] <server index>\n" +
-    "Options:\n" +
-    " -h                       : Displays this help message\n" +
-    " -c <configuration file>  : Use given configuration file for cluster configuration\n" +
-    "                            This file is a simple property file with indices as keys and URIs as values, eg. like\n\n" +
-    "                              0=http://localhost:1234\n" +
-    "                              1=http://localhost:3456\n" +
-    "                              2=http://localhost:4567\n\n" +
-    "                            Default is './barge.conf'\n" +
-    "<server index>            : Index of this server in the cluster configuration\n";
+      "Options:\n" +
+      " -h                       : Displays this help message\n" +
+      " -t <timeout in ms>       : Sets timeout in ms (default: 1000ms)\n" +
+      " -c <configuration file>  : Use given configuration file for cluster configuration\n" +
+      "                            This file is a simple property file with indices as keys and URIs as values, eg. like\n\n" +
+      "                              0=http://localhost:1234\n" +
+      "                              1=http://localhost:3456\n" +
+      "                              2=http://localhost:4567\n\n" +
+      "                            Default is './barge.conf'\n" +
+      "<server index>            : Index of this server in the cluster configuration\n";
 
   private final int serverIndex;
   private final URI[] uris;
+  private final int timeout;
 
   private HttpServer httpServer;
 
-  public RaftHttpServer(int serverIndex, URI[] uris) {
+  public RaftHttpServer(int serverIndex, URI[] uris, int timeout) {
     this.serverIndex = serverIndex;
     this.uris = uris;
+    this.timeout = timeout;
   }
 
   public void stop(int timeout) {
@@ -91,6 +94,7 @@ public class RaftHttpServer {
 
     File clusterConfiguration = new File("barge.conf");
     int index = -1;
+    int timeout = 1000;
 
     for (int i = 0; i < args.length; i++) {
 
@@ -99,6 +103,8 @@ public class RaftHttpServer {
       } else if (args[i].equals("-h")) {
         usage();
         System.exit(0);
+      } else if (args[i].equals("-t")) {
+        timeout = Integer.parseInt(args[++i]);
       } else {
 
         try {
@@ -117,7 +123,7 @@ public class RaftHttpServer {
 
     URI[] uris = readConfiguration(clusterConfiguration);
 
-    RaftHttpServer server = new RaftHttpServer(index, uris).start();
+    RaftHttpServer server = new RaftHttpServer(index, uris, timeout).start();
 
     //noinspection ResultOfMethodCallIgnored
     System.in.read();
@@ -142,7 +148,7 @@ public class RaftHttpServer {
       String[] pair = line.split("=");
 
       if (pair.length != 2)
-        throw new IOException("Invalid cluster configuration at line " + lineNumber);
+        logger.error("Invalid cluster configuration at line {}, ignoring", lineNumber);
 
       uris.add(Integer.parseInt(pair[0].trim()), new URI(pair[1].trim()));
     }
@@ -156,9 +162,8 @@ public class RaftHttpServer {
 
 
   public RaftHttpServer start() throws IOException {
-
     ClusterConfig clusterConfig = HttpClusterConfig.from(new HttpReplica(uris[serverIndex]),
-        new HttpReplica(uris[(serverIndex + 1) % 3]), new HttpReplica(uris[(serverIndex + 2) % 3]));
+      selectRemoteReplicas(serverIndex, uris));
 
     File logDir = new File("log" + serverIndex);
 
@@ -174,7 +179,7 @@ public class RaftHttpServer {
       }
     };
 
-    final JaxRsRaftModule raftModule = new JaxRsRaftModule(clusterConfig, logDir, stateMachine, 1500);
+    final JaxRsRaftModule raftModule = new JaxRsRaftModule(clusterConfig, logDir, stateMachine, timeout);
 
     final Injector injector = Guice.createInjector(raftModule);
 
@@ -184,15 +189,15 @@ public class RaftHttpServer {
       @Override
       protected void configure() {
         bindFactory(new Factory<Raft>() {
-            @Override
-            public Raft provide() {
-              return injector.getInstance(Raft.class);
-            }
+              @Override
+              public Raft provide() {
+                return injector.getInstance(Raft.class);
+              }
 
-            @Override
-            public void dispose(Raft raft) {
-            }
-          }).to(Raft.class);
+              @Override
+              public void dispose(Raft raft) {
+              }
+            }).to(Raft.class);
       }
     };
 
@@ -203,5 +208,16 @@ public class RaftHttpServer {
     this.httpServer = JdkHttpServerFactory.createHttpServer(uris[serverIndex], resourceConfig);
 
     return this;
+  }
+
+  private HttpReplica[] selectRemoteReplicas(int serverIndex, URI[] uris) {
+    int numberOfReplicas = uris.length;
+    HttpReplica[] result = new HttpReplica[numberOfReplicas - 1];
+
+    for (int i = 1; i < numberOfReplicas; i++) {
+      result[i - 1] = new HttpReplica(uris[(serverIndex + i) % numberOfReplicas]);
+    }
+
+    return result;
   }
 }
