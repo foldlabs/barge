@@ -1,4 +1,4 @@
-#!/bin/sh -vx
+#!/bin/sh 
 # send init to all registered members of the cluster
 
 CONF=barge.conf

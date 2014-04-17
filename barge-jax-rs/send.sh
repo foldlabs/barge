@@ -1,4 +1,4 @@
-#!/bin/sh -vx
+#!/bin/sh 
 
 function usage () {
   cat <<EOF 
